@@ -42,21 +42,31 @@ def ads_report():
     if not since or not until:
         return jsonify({"error": "Missing required query params: since, until"}), 400
 
-    accounts = get_ad_accounts()
+    try:
+        accounts = get_ad_accounts()
+    except Exception as e:
+        return jsonify({"error": f"Failed to get ad accounts: {str(e)}"}), 500
+
     results = []
 
     for account in accounts:
-        ads = get_ads(account["id"], since, until)
+        try:
+            ads = get_ads(account["id"], since, until)
+        except Exception as e:
+            continue  # skip failed accounts
+
         for ad in ads:
             insight = (ad.get("insights") or {}).get("data", [{}])[0]
             spend = float(insight.get("spend", "0"))
             if spend <= 1:
                 continue
+
             leads = extract_leads(insight.get("actions"))
             cpl = round(spend / leads, 2) if leads > 0 else None
+
             results.append({
                 "ad_account": account.get("name") or account["id"],
-                "ad_name": ad["name"],
+                "ad_name": ad.get("name"),
                 "spend": round(spend, 2),
                 "leads": leads,
                 "cpl": cpl
@@ -67,3 +77,5 @@ def ads_report():
         "data": results
     })
 
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
