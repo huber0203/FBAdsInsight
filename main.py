@@ -14,25 +14,25 @@ def get_ad_accounts():
     res.raise_for_status()
     return res.json().get("data", [])
 
-def get_ads(account_id, since, until):
-    url = f"{GRAPH_BASE}/{account_id}/ads"
+def fetch_insights(ad_account_id, since, until):
+    url = f"{GRAPH_BASE}/{ad_account_id}/insights"
     params = {
         "access_token": ACCESS_TOKEN,
-        "fields": "name,insights.fields(spend,actions)",
-        "time_range[since]": since,
-        "time_range[until]": until,
-        "filtering": '[{"field":"delivery_info","operator":"IN","value":["active","completed"]}]',
-        "limit": 500
+        "fields": "campaign_name,adset_name,ad_name,spend,date_start,date_stop,actions,cost_per_action_type",
+        "level": "ad",
+        "filtering": '[{"field":"spend","operator":"GREATER_THAN","value":"3"}]',
+        "time_range": f'{{"since":"{since}","until":"{until}"}}',
+        "action_breakdowns": '["action_type"]',
+        "limit": 200
     }
     res = requests.get(url, params=params)
     res.raise_for_status()
     return res.json().get("data", [])
 
-def extract_leads(actions):
-    for a in actions or []:
-        if a.get("action_type") == "lead":
-            return int(float(a.get("value", "0")))
-    return 0
+def extract_lead_data(actions, cpa):
+    leads = next((int(float(a["value"])) for a in (actions or []) if a.get("action_type") == "lead"), 0)
+    cpl = next((float(a["value"]) for a in (cpa or []) if a.get("action_type") == "lead"), None)
+    return leads, cpl
 
 @app.route("/ads-report", methods=["GET"])
 def ads_report():
@@ -51,25 +51,24 @@ def ads_report():
 
     for account in accounts:
         try:
-            ads = get_ads(account["id"], since, until)
+            insights = fetch_insights(account["id"], since, until)
         except Exception as e:
-            continue  # skip failed accounts
+            continue  # skip if one account fails
 
-        for ad in ads:
-            insight = (ad.get("insights") or {}).get("data", [{}])[0]
-            spend = float(insight.get("spend", "0"))
-            if spend <= 1:
-                continue
-
-            leads = extract_leads(insight.get("actions"))
-            cpl = round(spend / leads, 2) if leads > 0 else None
+        for row in insights:
+            spend = float(row.get("spend", "0"))
+            leads, cpl = extract_lead_data(row.get("actions"), row.get("cost_per_action_type"))
 
             results.append({
                 "ad_account": account.get("name") or account["id"],
-                "ad_name": ad.get("name"),
+                "ad_name": row.get("ad_name"),
+                "campaign_name": row.get("campaign_name"),
+                "adset_name": row.get("adset_name"),
                 "spend": round(spend, 2),
                 "leads": leads,
-                "cpl": cpl
+                "cpl": round(cpl, 2) if cpl is not None else None,
+                "date_start": row.get("date_start"),
+                "date_stop": row.get("date_stop")
             })
 
     return jsonify({
